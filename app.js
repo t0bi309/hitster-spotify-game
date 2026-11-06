@@ -6,7 +6,7 @@ const CONFIG = {
   winCards: 10,                 // Karten im Zeitstrahl bis zum Sieg
   minSongs: 10,                 // Mindestanzahl Songs für ein Spiel
   flagWords: /remaster|best of|greatest|deluxe|anniversary|collection|hits|edition|live/i,
-  storage: { auth: 'hs_auth', songs: 'hs_songs', verifier: 'hs_verifier' }
+  storage: { auth: 'hs_auth', lists: 'hs_lists', sel: 'hs_sel', verifier: 'hs_verifier' }
 };
 
 // ===== Hilfsfunktionen =====
@@ -96,13 +96,36 @@ class Song {
 }
 
 class Library {
-  static songs = store.get(CONFIG.storage.songs, []).map(s => new Song(s));
-  static save() { store.set(CONFIG.storage.songs, Library.songs); }
-  static find(id) { return Library.songs.find(s => s.id === id); }
-  static async import(input) {
+  static lists = [];   // [{ id, name, songs: [] }]
+  static sel = [];     // IDs der Listen, die im Spiel verwendet werden
+  static init() {
+    Library.lists = store.get(CONFIG.storage.lists, []);
+    Library.sel = store.get(CONFIG.storage.sel, []);
+    const old = store.get('hs_songs', null);   // Übernahme der alten Einzelliste
+    if (old && !Library.lists.length) { Library.lists = [{ id: 'alt', name: 'Erste Liste', songs: old }]; Library.sel = ['alt']; localStorage.removeItem('hs_songs'); }
+    Library.lists.forEach(l => l.songs = l.songs.map(s => new Song(s)));
+    Library.save();
+  }
+  static save() { store.set(CONFIG.storage.lists, Library.lists); store.set(CONFIG.storage.sel, Library.sel); }
+  static get songs() {   // alle Songs der gewählten Listen, ohne Doppelte
+    const m = new Map();
+    Library.lists.filter(l => Library.sel.includes(l.id)).forEach(l => l.songs.forEach(s => m.set(s.id, s)));
+    return [...m.values()];
+  }
+  static find(id) { for (const l of Library.lists) { const s = l.songs.find(x => x.id === id); if (s) return s; } }
+  static async import(input, name) {
     const id = (input.match(/playlist\/([A-Za-z0-9]+)/) || [, input.trim()])[1];
     const items = await Api.playlist(id);
-    Library.songs = items.map(i => i.item || i.track).filter(t => t && t.id && t.type !== 'episode').map(Song.fromTrack);
+    if (!name) { try { name = (await Api.call(`/playlists/${id}?fields=name`)).name; } catch { name = 'Liste ' + (Library.lists.length + 1); } }
+    const songs = items.map(i => i.item || i.track).filter(t => t && t.id && t.type !== 'episode').map(Song.fromTrack);
+    Library.lists = Library.lists.filter(l => l.id !== id);
+    Library.lists.push({ id, name, songs });
+    if (!Library.sel.includes(id)) Library.sel.push(id);
+    Library.save();
+  }
+  static remove(id) {
+    Library.lists = Library.lists.filter(l => l.id !== id);
+    Library.sel = Library.sel.filter(x => x !== id);
     Library.save();
   }
 }
@@ -171,7 +194,7 @@ class UI {
   static home() {
     Scanner.stop();
     if (!Auth.loggedIn) return UI.set(`<p class="muted">Melde dich mit deinem Spotify-Premium-Konto an.</p><button class="primary" data-act="login">Mit Spotify anmelden</button>`);
-    UI.set(`<p class="muted">${Library.songs.length} Songs in der Liste</p>
+    UI.set(`<p class="muted">${Library.lists.length} Listen, ${Library.songs.length} Songs ausgewählt</p>
       <button class="primary" data-act="setup">Spiel starten (digital)</button>
       <button data-act="scan">Karten scannen (physisch)</button>
       <button data-act="importView">Playlist importieren und prüfen</button>
@@ -182,31 +205,49 @@ class UI {
 
   // --- Import ---
   static importView() {
-    const rows = Library.songs.map((s, i) => `<tr class="${s.flag ? 'flag' : ''}"><td>${esc(s.artist)}<br><span class="muted">${esc(s.title)}${s.flag ? ' (' + esc(s.album) + ')' : ''}</span></td><td><input type="number" data-i="${i}" value="${s.year}"></td></tr>`).join('');
-    UI.set(`<h2>Playlist importieren</h2>
+    const lists = Library.lists.map(l => `<div class="row"><span>${esc(l.name)} <span class="muted">(${l.songs.length})</span></span>
+      <span><button data-act="editList" data-id="${l.id}">Prüfen</button> <button data-act="removeList" data-id="${l.id}">Entfernen</button></span></div>`).join('');
+    UI.set(`<h2>Meine Listen</h2>${lists || '<p class="muted">Noch keine Liste importiert.</p>'}
+      <h2>Neue Playlist</h2>
       <p class="muted">Die Playlist muss dir gehören. Fremde Playlists vorher in eine eigene kopieren.</p>
       <input id="pl" placeholder="Playlist-Link oder ID">
-      <button class="primary" data-act="doImport">Importieren</button>
-      ${rows ? `<p class="muted">Gelb markiert: Das Jahr stammt vermutlich von einem Sampler oder Remaster. Bitte prüfen.</p>
-      <div class="scroll"><table>${rows}</table></div><button data-act="saveYears">Jahre speichern</button>` : ''}`);
+      <input id="plname" placeholder="Name, z. B. Metal (optional)">
+      <button class="primary" data-act="doImport">Importieren</button>`);
   }
   static async doImport() {
     const v = $('#pl').value; if (!v) return;
     toast('Lade Playlist …');
-    try { await Library.import(v); UI.importView(); toast(Library.songs.length + ' Songs importiert'); } catch (e) { toast(e.message); }
+    try { await Library.import(v, $('#plname').value.trim()); UI.importView(); toast('Importiert'); } catch (e) { toast(e.message); }
+  }
+  static removeList(el) {
+    if (!confirm('Diese Liste wirklich entfernen?')) return;
+    Library.remove(el.dataset.id); UI.importView();
+  }
+  static editList(el) {
+    const l = UI.edit = Library.lists.find(x => x.id === el.dataset.id);
+    const rows = l.songs.map((s, i) => `<tr class="${s.flag ? 'flag' : ''}"><td>${esc(s.artist)}<br><span class="muted">${esc(s.title)}${s.flag ? ' (' + esc(s.album) + ')' : ''}</span></td><td><input type="number" data-i="${i}" value="${s.year}"></td></tr>`).join('');
+    UI.set(`<h2>${esc(l.name)}</h2>
+      <p class="muted">Gelb markiert: Das Jahr stammt vermutlich von einem Sampler oder Remaster. Bitte prüfen.</p>
+      <div class="scroll"><table>${rows}</table></div>
+      <button class="primary" data-act="saveYears">Jahre speichern</button><button class="ghost" data-act="importView">Zurück</button>`);
   }
   static saveYears() {
-    document.querySelectorAll('td input').forEach(i => Library.songs[i.dataset.i].year = +i.value || 0);
+    document.querySelectorAll('td input').forEach(i => UI.edit.songs[i.dataset.i].year = +i.value || 0);
     Library.save(); toast('Gespeichert');
   }
 
   // --- Digitales Spiel ---
   static setup() {
-    if (Library.songs.length < CONFIG.minSongs) return toast(`Erst eine Playlist importieren (mindestens ${CONFIG.minSongs} Songs).`);
-    UI.set(`<h2>Spieler</h2><input id="names" value="Spieler 1, Spieler 2" placeholder="Namen, mit Komma getrennt">
+    if (!Library.lists.length) return toast('Erst eine Playlist importieren.');
+    const boxes = Library.lists.map(l => `<label class="row"><span>${esc(l.name)} <span class="muted">(${l.songs.length})</span></span>
+      <input type="checkbox" value="${l.id}" ${Library.sel.includes(l.id) ? 'checked' : ''}></label>`).join('');
+    UI.set(`<h2>Quiz wählen</h2><p class="muted">Eine Liste für ein Genre, mehrere für einen Mix.</p>${boxes}
+      <h2>Spieler</h2><input id="names" value="Spieler 1, Spieler 2" placeholder="Namen, mit Komma getrennt">
       <button class="primary" data-act="startGame">Spiel starten</button>`);
   }
   static startGame() {
+    Library.sel = [...document.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value); Library.save();
+    if (Library.songs.length < CONFIG.minSongs) return toast(`Wähle Listen mit zusammen mindestens ${CONFIG.minSongs} Songs.`);
     const n = $('#names').value.split(',').map(x => x.trim()).filter(Boolean);
     if (!n.length) return;
     UI.game = new Game(n); UI.turn();
@@ -263,6 +304,7 @@ class UI {
     const a = e.target.closest('[data-act]');
     if (a && typeof UI[a.dataset.act] === 'function') UI[a.dataset.act](a);
   });
+  Library.init();
   await Auth.handleCallback();
   UI.home();
 })();

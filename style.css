@@ -20,6 +20,9 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline
 button.primary{background:var(--accent);color:var(--accent-text);border:0;font-weight:700}
 button.ghost{background:transparent}
 .muted{color:var(--muted);margin:0}
+.row{display:flex;justify-content:space-between;align-items:center;gap:var(--gap);background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:10px 14px}
+.row button{padding:8px 10px}
+input[type=checkbox]{width:22px;height:22px;padding:0;accent-color:var(--accent)}
 .line{display:flex;gap:8px;overflow-x:auto;padding:6px 0}
 .card{flex:0 0 var(--card-size);height:var(--card-size);background:var(--card-bg);color:var(--card-text);border-radius:var(--radius);padding:8px;display:flex;flex-direction:column;justify-content:space-between;font-size:var(--fs-card);overflow:hidden}
 .card .year{font-size:var(--fs-year);font-weight:800}

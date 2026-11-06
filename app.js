@@ -5,6 +5,11 @@ const CONFIG = {
   scopes: 'user-read-private playlist-read-private playlist-read-collaborative user-modify-playback-state user-read-playback-state',
   winCards: 10,                 // Karten im Zeitstrahl bis zum Sieg
   minSongs: 10,                 // Mindestanzahl Songs für ein Spiel
+  maxPlayers: 8,
+  introMs: 1000,                // Einblendung "X ist dran"
+  fxBars: 28,                   // Balken der Musik-Animation
+  playerColors: ['#ff6b6b', '#4dabf7', '#51cf66', '#fcc419', '#b197fc', '#ff922b', '#22b8cf', '#f783ac'],
+  cardColors: ['#e6edfc', '#fde6ea', '#e3f5ea', '#fdf1d6', '#ece5fb', '#dff2f6'],  // helle Kartenfarben
   flagWords: /remaster|best of|greatest|deluxe|anniversary|collection|hits|edition|live/i,
   storage: { auth: 'hs_auth', lists: 'hs_lists', sel: 'hs_sel', verifier: 'hs_verifier' }
 };
@@ -140,27 +145,37 @@ class Player {
 
 // ===== Kartendarstellung =====
 class Card {
+  static color(s) { let h = 0; for (const c of s.id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return CONFIG.cardColors[h % CONFIG.cardColors.length]; }
   static html(s, hidden = false) {
     return hidden
       ? `<div class="card hidden"><span class="year">?</span></div>`
-      : `<div class="card"><span class="year">${s.year}</span><b>${esc(s.title)}</b><small>${esc(s.artist)}</small></div>`;
+      : `<div class="card" style="--cc:${Card.color(s)}"><span class="year">${s.year}</span><b>${esc(s.title)}</b><small>${esc(s.artist)}</small></div>`;
   }
+  static node(inner, hollow = false) { return `<div class="node${hollow ? ' hollow' : ''}">${inner}</div>`; }
+  static timeline(inner) { return `<div class="axis"><span>← älter</span><span>jünger →</span></div><div class="line">${inner}</div>`; }
 }
 
-// ===== Spiellogik (digitale Timeline) =====
+// ===== Spiellogik =====
 class Game {
-  constructor(names) {
+  static initials(n) {
+    const w = n.trim().split(/\s+/).filter(Boolean);
+    return (w.length > 1 ? w[0][0] + w[1][0] : (w[0] || '?').slice(0, 2)).toUpperCase();
+  }
+  constructor(names, mode, target) {
+    this.mode = mode; this.target = target; this.count = 0;   // mode: 'score' oder 'rounds'
     this.deck = shuffle(Library.songs);
-    this.players = names.map(n => ({ name: n, line: [this.deck.pop()] }));
+    this.players = names.map((n, i) => ({ name: n, ini: Game.initials(n), color: CONFIG.playerColors[i], score: 0, line: [this.deck.pop()] }));
     this.turn = 0; this.current = null; this.ok = false; this.won = false;
   }
   get player() { return this.players[this.turn]; }
+  get winners() { const m = Math.max(...this.players.map(p => p.score)); return this.players.filter(p => p.score === m); }
   draw() { return (this.current = this.deck.pop()); }
   place(i) {
     const l = this.player.line, p = l[i - 1], n = l[i], y = this.current.year;
     this.ok = (!p || y >= p.year) && (!n || y <= n.year);
-    if (this.ok) l.splice(i, 0, this.current);
-    this.won = this.ok && l.length >= CONFIG.winCards;
+    if (this.ok) { l.splice(i, 0, this.current); this.player.score++; }
+    this.count++;
+    this.won = this.mode === 'score' ? this.player.score >= this.target : this.count >= this.target * this.players.length;
   }
   next() { this.turn = (this.turn + 1) % this.players.length; this.current = null; }
 }
@@ -189,10 +204,23 @@ class Scanner {
 
 // ===== Oberfläche: jede Methode ist ein Bildschirm oder eine Aktion (data-act) =====
 class UI {
+  static names = ['Spieler 1', 'Spieler 2'];
+  static opts = { mode: 'score', target: 10 };
   static set(html) { $('#view').innerHTML = html; }
+  static fx(on) { $('#fx').classList.toggle('on', on); }
+  static board() {
+    const g = UI.game;
+    $('#board').innerHTML = g ? g.players.map((p, i) => `<div class="pchip${i === g.turn ? ' on' : ''}" style="--pc:${p.color}"><i>${p.ini}</i><b>${p.score}</b></div>`).join('') : '';
+  }
+  static intro(p) {
+    const d = document.createElement('div');
+    d.className = 'intro'; d.style.setProperty('--pc', p.color); d.style.animationDuration = CONFIG.introMs + 'ms';
+    d.innerHTML = `<div><span>${esc(p.name)}</span> ist dran</div>`;
+    document.body.append(d); setTimeout(() => d.remove(), CONFIG.introMs);
+  }
 
   static home() {
-    Scanner.stop();
+    Scanner.stop(); UI.game = null; UI.board(); UI.fx(false);
     if (!Auth.loggedIn) return UI.set(`<p class="muted">Melde dich mit deinem Spotify-Premium-Konto an.</p><button class="primary" data-act="login">Mit Spotify anmelden</button>`);
     UI.set(`<p class="muted">${Library.lists.length} Listen, ${Library.songs.length} Songs ausgewählt</p>
       <button class="primary" data-act="setup">Spiel starten (digital)</button>
@@ -236,28 +264,45 @@ class UI {
     Library.save(); toast('Gespeichert');
   }
 
-  // --- Digitales Spiel ---
+  // --- Spiel-Setup ---
+  static readSetup() {
+    UI.names = [...document.querySelectorAll('.pn')].map(i => i.value.trim());
+    UI.opts = { mode: $('#mode').value, target: +$('#target').value || 10 };
+    Library.sel = [...document.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value);
+    Library.save();
+  }
   static setup() {
     if (!Library.lists.length) return toast('Erst eine Playlist importieren.');
     const boxes = Library.lists.map(l => `<label class="row"><span>${esc(l.name)} <span class="muted">(${l.songs.length})</span></span>
       <input type="checkbox" value="${l.id}" ${Library.sel.includes(l.id) ? 'checked' : ''}></label>`).join('');
+    const players = UI.names.map((n, i) => `<div class="row"><i class="chip" style="--pc:${CONFIG.playerColors[i]}">${Game.initials(n || '?')}</i>
+      <input class="pn" value="${esc(n)}" placeholder="Spieler ${i + 1}"><button data-act="delPlayer" data-i="${i}">−</button></div>`).join('');
+    const o = UI.opts;
     UI.set(`<h2>Quiz wählen</h2><p class="muted">Eine Liste für ein Genre, mehrere für einen Mix.</p>${boxes}
-      <h2>Spieler</h2><input id="names" value="Spieler 1, Spieler 2" placeholder="Namen, mit Komma getrennt">
+      <h2>Spieler</h2>${players}
+      ${UI.names.length < CONFIG.maxPlayers ? '<button data-act="addPlayer">+ Spieler hinzufügen</button>' : ''}
+      <h2>Siegbedingung</h2>
+      <div class="row"><select id="mode"><option value="score" ${o.mode === 'score' ? 'selected' : ''}>Wer zuerst so viele Punkte hat</option>
+        <option value="rounds" ${o.mode === 'rounds' ? 'selected' : ''}>Feste Rundenzahl pro Spieler</option></select>
+        <input id="target" type="number" min="1" value="${o.target}"></div>
       <button class="primary" data-act="startGame">Spiel starten</button>`);
   }
+  static addPlayer() { UI.readSetup(); UI.names.push('Spieler ' + (UI.names.length + 1)); UI.setup(); }
+  static delPlayer(el) { UI.readSetup(); if (UI.names.length > 1) UI.names.splice(+el.dataset.i, 1); UI.setup(); }
   static startGame() {
-    Library.sel = [...document.querySelectorAll('input[type=checkbox]:checked')].map(c => c.value); Library.save();
+    UI.readSetup();
     if (Library.songs.length < CONFIG.minSongs) return toast(`Wähle Listen mit zusammen mindestens ${CONFIG.minSongs} Songs.`);
-    const n = $('#names').value.split(',').map(x => x.trim()).filter(Boolean);
-    if (!n.length) return;
-    UI.game = new Game(n); UI.turn();
+    UI.game = new Game(UI.names.map((n, i) => n || 'Spieler ' + (i + 1)), UI.opts.mode, UI.opts.target);
+    UI.turn();
   }
+
+  // --- Spielablauf ---
   static turn() {
-    const g = UI.game, p = g.player;
-    UI.set(`<h2>${esc(p.name)} ist dran</h2>
-      <p class="muted">${g.players.map(x => esc(x.name) + ': ' + x.line.length + '/' + CONFIG.winCards).join(' | ')}</p>
-      <div class="line">${p.line.map(s => Card.html(s)).join('')}</div>
+    const g = UI.game, p = g.player; UI.fx(false); UI.board();
+    UI.set(`<h2 class="ptitle" style="--pc:${p.color}">${esc(p.name)} ist dran</h2>
+      ${Card.timeline(p.line.map(s => Card.node(Card.html(s))).join(''))}
       <button class="primary" data-act="drawCard">Song ziehen und abspielen</button>`);
+    UI.intro(p);
   }
   static async drawCard() {
     const s = UI.game.draw();
@@ -265,34 +310,38 @@ class UI {
     UI.cur = s; await Player.play(s); UI.place();
   }
   static place() {
-    const g = UI.game; let h = `<button class="slot" data-act="pick" data-i="0">+</button>`;
-    g.player.line.forEach((s, i) => h += Card.html(s) + `<button class="slot" data-act="pick" data-i="${i + 1}">+</button>`);
-    UI.set(`<h2>${esc(g.player.name)}: Wohin gehört der Song?</h2><p class="muted">Der Song läuft in Spotify.</p>
-      <div class="line">${h}</div><button class="ghost" data-act="replay">Nochmal abspielen</button>`);
+    const g = UI.game, slot = i => Card.node(`<button class="slot" data-act="pick" data-i="${i}">+</button>`, true);
+    let h = slot(0);
+    g.player.line.forEach((s, i) => h += Card.node(Card.html(s)) + slot(i + 1));
+    UI.fx(true);
+    UI.set(`<h2 class="ptitle" style="--pc:${g.player.color}">${esc(g.player.name)}: Wohin gehört der Song?</h2>
+      ${Card.timeline(h)}<button class="ghost" data-act="replay">Nochmal abspielen</button>`);
   }
   static replay() { Player.play(UI.cur); }
   static pick(el) {
-    const g = UI.game; g.place(+el.dataset.i);
-    UI.set(`<h2>${g.ok ? 'Richtig!' : 'Leider falsch'}</h2><div class="line">${Card.html(g.current)}</div>
-      ${g.won ? `<h2>${esc(g.player.name)} gewinnt!</h2><button class="primary" data-act="home">Zum Menü</button>`
+    const g = UI.game; g.place(+el.dataset.i); UI.fx(false); UI.board();
+    UI.set(`<h2>${g.ok ? 'Richtig!' : 'Leider falsch'}</h2><div class="solo">${Card.html(g.current)}</div>
+      ${g.won ? `<h2>${g.winners.map(p => esc(p.name)).join(' & ')} gewinnt!</h2><button class="primary" data-act="home">Zum Menü</button>`
               : `<button class="primary" data-act="nextPlayer">Nächster Spieler</button>`}`);
   }
   static nextPlayer() { UI.game.next(); UI.turn(); }
 
   // --- Physische Karten scannen ---
   static scan() {
+    UI.fx(false);
     UI.set(`<h2>Karte scannen</h2><video id="cam" playsinline muted></video><p class="muted">QR-Code der Karte in die Kamera halten.</p>`);
     Scanner.start($('#cam'), UI.scanned).catch(e => toast('Kamera nicht verfügbar: ' + e.message));
   }
   static async scanned(id) {
     let s = Library.find(id);
     if (!s) { try { s = Song.fromTrack(await Api.track(id)); } catch (e) { toast(e.message); return UI.scan(); } }
-    UI.cur = s; await Player.play(s);
-    UI.set(`<h2>Song läuft</h2><div class="line">${Card.html(s, true)}</div>
+    UI.cur = s; await Player.play(s); UI.fx(true);
+    UI.set(`<h2>Song läuft</h2><div class="solo">${Card.html(s, true)}</div>
       <button class="primary" data-act="reveal">Aufdecken</button><button class="ghost" data-act="replay">Nochmal abspielen</button>`);
   }
   static reveal() {
-    UI.set(`<div class="line">${Card.html(UI.cur)}</div>
+    UI.fx(false);
+    UI.set(`<div class="solo">${Card.html(UI.cur)}</div>
       <button class="primary" data-act="scan">Nächste Karte scannen</button><button class="ghost" data-act="home">Menü</button>`);
   }
 }
@@ -304,6 +353,8 @@ class UI {
     const a = e.target.closest('[data-act]');
     if (a && typeof UI[a.dataset.act] === 'function') UI[a.dataset.act](a);
   });
+  $('#fx').innerHTML = Array.from({ length: CONFIG.fxBars }, (_, i) => `<i style="--d:${(i * 37 % 11) / 10}s;--h:${30 + (i * 53 % 60)}%"></i>`).join('')
+    + [0, 1, 2, 3, 4].map(i => `<em style="left:${10 + i * 19}%;--d:${i * .6}s">${i % 2 ? '♪' : '♫'}</em>`).join('');
   Library.init();
   await Auth.handleCallback();
   UI.home();

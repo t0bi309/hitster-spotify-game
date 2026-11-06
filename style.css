@@ -1,0 +1,36 @@
+/* ===== DESIGN-VARIABLEN: hier alles zentral anpassen ===== */
+:root{
+  --bg:#14151a; --panel:#1e2028; --border:#2e313c;
+  --text:#e9eaee; --muted:#8e93a1;
+  --accent:#7c9cff; --accent-text:#0b1020; --warn:#3a2f14;
+  --card-bg:#eceff4; --card-text:#16181d; --card-sub:#5a6070; --card-hidden:#c9cfdb;
+  --card-size:112px; --slot-w:40px;
+  --radius:12px; --gap:12px;
+  --font:"Segoe UI",system-ui,-apple-system,sans-serif;
+  --fs-base:1rem; --fs-h:1.2rem; --fs-year:1.6rem; --fs-card:.8rem;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:var(--font);font-size:var(--fs-base);line-height:1.45}
+header{display:flex;justify-content:space-between;align-items:center;max-width:640px;margin:0 auto;padding:var(--gap) 16px}
+h1,h2{margin:0;font-size:var(--fs-h);font-weight:700}
+main{max-width:640px;margin:0 auto;padding:0 16px 40px;display:flex;flex-direction:column;gap:var(--gap)}
+button,input{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px}
+button{cursor:pointer}
+button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.primary{background:var(--accent);color:var(--accent-text);border:0;font-weight:700}
+button.ghost{background:transparent}
+.muted{color:var(--muted);margin:0}
+.line{display:flex;gap:8px;overflow-x:auto;padding:6px 0}
+.card{flex:0 0 var(--card-size);height:var(--card-size);background:var(--card-bg);color:var(--card-text);border-radius:var(--radius);padding:8px;display:flex;flex-direction:column;justify-content:space-between;font-size:var(--fs-card);overflow:hidden}
+.card .year{font-size:var(--fs-year);font-weight:800}
+.card small{color:var(--card-sub)}
+.card.hidden{background:var(--card-hidden);align-items:center;justify-content:center}
+.slot{flex:0 0 var(--slot-w);height:var(--card-size);padding:0;border-style:dashed}
+video{width:100%;border-radius:var(--radius);background:#000}
+table{width:100%;border-collapse:collapse}
+td{padding:6px;border-bottom:1px solid var(--border)}
+td input{width:84px;padding:6px 8px}
+tr.flag td{background:var(--warn)}
+.scroll{max-height:55vh;overflow:auto}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:#333;padding:10px 16px;border-radius:var(--radius);opacity:0;transition:opacity .3s;pointer-events:none;max-width:90%}
+#toast.show{opacity:1}
